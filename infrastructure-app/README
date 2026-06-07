@@ -1,0 +1,56 @@
+# AWS Application Infrastructure Layer
+
+This repository contains the Terraform configuration required to deploy the core application layer in AWS. It provisions dynamic EC2 compute nodes, a secure Amazon RDS PostgreSQL database, and a CloudWatch observability stack.
+
+The infrastructure is designed to be modular. .It dynamically fetches network and storage routing parameters from previously deployed infrastructure layers using Terraform Remote State with DynamoDB state locking enabled to ensure safe concurrent operations..
+
+## 📂 Repository Structure
+
+* `main.tf`: The core entry point. It fetches remote states (Network/Storage), defines the compute nodes, and auto-generates the Ansible inventory.
+* `modules/web_server/`: A reusable, workload-agnostic EC2 module. It configures the instances, attaches security groups, and sets up CloudWatch logging.
+* `modules/database/`: Provisions the RDS PostgreSQL instance. It generates a master password in memory and securely stores it in AWS Systems Manager (SSM) Parameter Store.
+* `monitoring.tf`: Builds a unified CloudWatch Dashboard and configures SNS alarms for CPU spikes and storage limits.
+* `setup.sh` & `cloud-config.yaml`: Standalone provisioning templates (Cloud-init/Shell) used to bootstrap the Docker daemon and the Docker Compose plugin. Kept as fallback options for environments where configuration management tools are not used.
+
+## ⚙️ Version Requirements
+* Terraform: >= 1.5.7
+* AWS Provider: ~> 5.0
+
+## Prerequisites
+
+Before applying this configuration, ensure the following requirements are met:
+
+1. **Base Infrastructure:** The Network and Storage layers must be deployed first. This module expects their state files to be available in the S3 backend (`network/terraform.tfstate` and `storage/terraform.tfstate`).
+2. **SSH Key Pair:** You must have a public SSH key named `github_actions_key.pub` located in the root of this directory. This key is injected into the EC2 instances for deployment access.
+3. **Alerting Email:** Be ready to provide a valid email address for the `alert_email` variable to receive automated CloudWatch alarms.
+
+
+## ⚠️ Operational Constraints
+
+The infrastructure enforces specific configuration limits to optimize costs and manage resource lifecycles. 
+
+* **Database Deletion Policy:** The RDS PostgreSQL instance is provisioned with `skip_final_snapshot = true`. Executing an infrastructure teardown will permanently erase all database records without creating a backup. To ensure data persistence before a teardown, modify this parameter to `false` in `modules/database/main.tf`.
+* **Log Retention Limits:** The EC2 compute nodes forward system and application events to AWS CloudWatch. A 7-day retention policy is applied to the log group `/aws/ec2/${var.server_name}/logs`. Log events older than that are automatically purged to prevent uncontrolled storage cost accumulation.
+* **Least Privilege Access:** Compute instances receive execution permissions via an IAM Instance Profile. The assigned policy exclusively grants the mathematical right to decrypt the specific SSM Parameter containing the database password (`kms:Decrypt`) and the right to write logs strictly to the designated CloudWatch log group.
+
+
+## 🔗 Post-Deployment & Server Provisioning
+
+This infrastructure intentionally stops at the OS level (infrastructure provisioning) and hands over software configuration to external tools.
+
+**How to configure your servers post-deployment:**
+
+1. **Ansible Integration (Primary Method):** Upon a successful `terraform apply`, Terraform automatically generates a file named `inventory.ini` in your `../ansible/` directory. This file contains the exact Instance IDs, SSH proxy commands (via AWS SSM), and private IPs required for Ansible to immediately connect to the nodes without exposing port 22 to the public internet.
+
+2. **Alternative Provisioning (Cloud-init / Shell):**
+If the primary Ansible integration is not utilized, the repository provides two fallback methods to initialize the container environment on the compute nodes. These can be executed by passing them to the `user_data` argument in the EC2 module prior to deployment. Both templates achieve the exact same operational state using different execution paradigms:
+* `cloud-config.yaml`: A declarative cloud-init configuration that installs Docker, Git, and htop. It applies a systemd override (`override.conf`) to the Docker service, adds the `ec2-user` to the Docker group, and explicitly downloads the `docker-compose` CLI plugin to enable multi-container application deployments.
+* `setup.sh`: An imperative bash script that updates the system package manager, installs and enables the Docker daemon, assigns user group permissions, and downloads the exact same `docker-compose` CLI plugin.
+
+3. **Direct SSH Access:** The terminal will output the direct SSH connection commands for all provisioned servers. Example output:
+```bash
+all_servers_connections = {
+  "app_node_1" = "ssh -i ~/.ssh/github_actions_key ec2-user@10.0.2.45" }
+
+4. **Database Credentials:**
+The database master password is **never** printed in the console. It is safely stored in the AWS SSM Parameter Store at `/<environment>/database/<db_identifier>/password`. Your compute instances are provisioned with IAM roles that allow them to automatically decrypt and fetch this password at runtime.

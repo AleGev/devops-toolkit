@@ -1,0 +1,96 @@
+on:
+    workflow_dispatch:
+    #push:
+        #branches: ["main"]
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: eu-central-1
+
+        steps:
+
+            - name: check aws
+              run: aws sts get-caller-identity 
+
+            - name: download files to Github action
+              run: |
+               git init
+               git remote add origin https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+               
+               git sparse-checkout init --cone
+               git sparse-checkout set infrastructure-app infrastructure-storage infrastructure-network ansible app Dockerfile
+              
+               git pull --depth=1 origin main
+
+            - name: Install terraform 
+              run: |
+                sudo apt-get update && sudo apt-get install -y gnupg software-properties-common
+                wget -O- https://apt.releases.hashicorp.com/gpg | \
+                gpg --dearmor | \
+                sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg > /dev/null
+                echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release || lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+                sudo apt update
+                sudo apt-get install terraform
+
+            - name: login to hub
+              run: echo "${{secrets.DOCKERHUB_PASSWORD}}" | docker login -u "${{secrets.DOCKERHUB_USERNAME}}" --password-stdin
+
+            - name: BUILD and PUSH
+              run: |
+                docker build -t ${{secrets.DOCKERHUB_USERNAME}}/my-app:${{github.sha}} -t ${{secrets.DOCKERHUB_USERNAME}}/my-app:latest .
+                docker push ${{secrets.DOCKERHUB_USERNAME}}/my-app:${{github.sha}}
+                docker push ${{secrets.DOCKERHUB_USERNAME}}/my-app:latest
+
+            - name: Install ansible
+              run: sudo apt install ansible -y
+
+             # --- НОВЫЙ ШАГ: Установка плагина SSM для раннера ---
+            - name: Install AWS Session Manager Plugin
+              run: |
+                curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o "session-manager-plugin.deb"
+                sudo dpkg -i session-manager-plugin.deb
+
+            - name: set up ssh key on runner
+              run: |
+                mkdir -p ~/.ssh
+                echo "${{secrets.SSH_PRIVATE_KEY}}" > ~/.ssh/deploy_key
+                chmod 600 ~/.ssh/deploy_key
+
+
+            - name: launch infrastructure-network
+              working-directory: infrastructure-network
+              run: |
+                terraform init
+                terraform apply -auto-approve
+                
+
+            - name: launch infrastructure-storage
+              working-directory: infrastructure-storage
+              run: |
+                terraform init
+                terraform apply -auto-approve
+                # Запись системного вывода Terraform в локальную переменную раннера
+                EXTRACTED_ENDPOINT=$(terraform output -raw redis_endpoint)
+                # Инъекция значения в глобальную среду исполнения текущего задания
+                echo "REDIS_ENDPOINT=$EXTRACTED_ENDPOINT" >> $GITHUB_ENV
+
+
+            - name: launch infrastructure-app
+              working-directory: infrastructure-app
+              run: |
+                terraform init
+                terraform apply -auto-approve
+                
+
+            - name: Check full cycle of configuration & initialize ansible-playbook
+              working-directory: ./ansible
+              run: |
+                echo "Ожидание инициализации фоновых процессов AWS (60 секунд)..."
+                sleep 60
+                ansible webservers -i inventory.ini -m ping
+                ansible-playbook -i inventory.ini playbook.yml -e "dockerhub_user=${{ secrets.DOCKERHUB_USERNAME }} app_token=${{ secrets.BOT_TOKEN }} redis_url=${{ env.REDIS_ENDPOINT }}"
+

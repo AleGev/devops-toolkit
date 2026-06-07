@@ -1,0 +1,51 @@
+services:
+  #my_redis:
+    #image: redis:alpine
+    #restart: always
+    #ports:
+    #  - "6379:6379"
+
+    # Instruct Redis to create a memory snapshot on disk every 60 seconds
+    # if at least one write operation has occurred.
+    #command: redis-server --save 60 1 --loglevel warning
+
+    #volumes:
+     # - redis_data:/data
+  my_app:
+    image: ${DOCKERHUB_USERNAME}/my-app:latest
+    restart: always
+    #depends_on: ["my_redis"]
+    environment: 
+      - "REDIS_HOST=${my_redis}"
+      - "APP_TOKEN=${APP_TOKEN}" 
+      - "PYTHONUNBUFFERED=1" # <--- Prevent Python from buffering logs in memory 
+    healthcheck:
+      test: ["CMD-SHELL", "find /app/heartbeat.txt -mmin -2 | grep . || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+   # Docker Compose service labels for autoheal
+    labels:
+      - "autoheal=true"
+    
+    logging:
+      driver: "awslogs"
+      options:
+        awslogs-region: "eu-central-1"
+        awslogs-group: "/aws/ec2/telegram-bot"
+        tag: "bot/{{.Name}}" # <-- # Docker automatically assigns the container name
+
+  
+  # Automatically restart the container if it stops 
+  autoheal:
+    image: willfarrell/autoheal:latest
+    restart: always
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+# Named volume managed by Docker
+#volumes:
+#  redis_data:

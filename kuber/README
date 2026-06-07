@@ -1,0 +1,59 @@
+# AWS EKS Infrastructure & Delivery Pipeline
+
+This repository contains the Terraform configuration for provisioning an Amazon EKS cluster, managing OIDC-based access, and a declarative CI/CD pipeline using GitHub Actions and Helm.
+
+The architecture is decoupled from specific application logic and serves as a reusable blueprint for deploying containerized workloads.
+
+## Architecture Principles
+
+1. **Remote State Integration:** The EKS module does not contain hardcoded network parameters. It fetches configuration data from the `infrastructure-network` and `infrastructure-storage` state files, deploying the control plane and worker nodes strictly within isolated private subnets.
+2. **IAM Roles for Service Accounts (IRSA):** Workload permissions are managed via an OIDC provider. Containers do not inherit underlying EC2 instance profiles. Terraform generates scoped IAM roles (e.g., for SSM parameter access) and passes the ARNs directly to the Helm charts.
+3. **Automated Ingress Routing:** The cluster natively integrates with the AWS Load Balancer Controller. Deploying a Kubernetes Ingress resource automatically triggers the provisioning of an Application Load Balancer (ALB) in the AWS public subnets.
+
+## 📂 Repository Structure
+
+* `infrastructure-EKS/`: The Terraform module. Deploys the EKS control plane, managed node groups (with Taints/Labels support), the OIDC provider, and IAM policies for the application.
+* `app-chart/`: A generic Helm chart defining the core Kubernetes resources (Deployment, Service, Ingress, ServiceAccount). Docker image tags and IAM ARNs are injected dynamically during the pipeline run.
+* `.github/workflows/EKS_pipeline.yaml`: The CI/CD workflow. It builds the Docker image, sequentially applies the Terraform layers, and executes the Helm release.
+* `pods/`: A reference library of Kubernetes manifests demonstrating workload scheduling techniques, including Taints, Tolerations, NodeSelectors, and Volume mounts.
+
+## CI/CD Pipeline Execution
+
+The GitHub Actions workflow acts as the orchestrator, linking Terraform and Helm into a single deployment stream:
+
+1. **Build & Push:** Packages the application code into a Docker image, tags it with the Git commit SHA, and pushes it to Docker Hub.
+2. **Base Infrastructure Initialization:** Applies the Network and Storage layers, extracting system outputs (VPC ID, Redis Endpoint) into the runner's environment variables.
+3. **EKS Provisioning:** Deploys the cluster and exports the generated IRSA ARNs.
+4. **Helm Deployment:** Updates the AWS Load Balancer Controller and deploys the target application (`app-chart`), passing the dynamic infrastructure parameters:
+```bash
+helm upgrade --install my-app kuber/app-chart \
+  --set image.repository=<DOCKER_IMAGE> \
+  --set image.tag=<COMMIT_SHA> \
+  --set serviceAccount.roleArn=<DYNAMIC_IAM_ARN_FROM_TERRAFORM>
+
+```
+
+## Helm Configuration Strategy (values.yaml vs --set)
+The deployment utilizes a split configuration strategy for Kubernetes resources:
+
+Dynamic Injection (--set): Values that change per build or depend on live infrastructure state are injected directly via --set flags in the GitHub Actions workflow. This is strictly used for ephemeral data, such as the Git commit SHA for image versioning and the dynamically generated IAM Role ARNs from Terraform outputs.
+
+Static Defaults (values.yaml): The app-chart/values.yaml file is reserved for persistent, environment-agnostic baselines. When deploying new workloads, use this file to declare static architectural parameters (e.g., default replica counts, resource limits, or static environment variables) to keep the CI/CD pipeline code clean and maintainable.
+
+## Adapting for New Workloads
+
+To reuse this blueprint for a different microservice, apply the following changes:
+
+1. **Docker Repository:** Update the Docker Hub repository path in the `EKS_pipeline.yaml` workflow file.
+2. **Secrets Management:** Modify the `aws_ssm_parameter` resources in `infrastructure-EKS/eks.tf` to match the specific environment variables required by your new application.
+3. **Network Routing:** Adjust the container target port and Ingress paths (`path: /`) in `app-chart/app.yaml`.
+4. **Node Scheduling:** If the new service requires specialized compute resources (e.g., memory-optimized nodes or database isolation), use the `db_nodes` pattern and apply the Tolerations found in `pods/deploy_with_toleration.yaml`.
+
+## GitHub Actions Requirements (Secrets)
+
+To execute the automated pipeline, the following Action Secrets must be configured in your GitHub repository settings:
+
+* `AWS_ACCESS_KEY_ID` & `AWS_SECRET_ACCESS_KEY`: IAM credentials with permissions to run Terraform and update EKS.
+* `DOCKERHUB_USERNAME` & `DOCKERHUB_PASSWORD`: Credentials for pushing the application image.
+* `SSH_PRIVATE_KEY`: The deployment key for EC2 instances (if applicable to the base layers).
+* `BOT_TOKEN` (or application-specific secrets): Injected into AWS SSM Parameter Store during the Terraform run.

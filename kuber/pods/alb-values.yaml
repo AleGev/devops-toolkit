@@ -1,0 +1,6 @@
+clusterName: my-cluster
+region: eu-central-1
+
+serviceAccount:
+  create: true
+  name: aws-load-balancer-controller

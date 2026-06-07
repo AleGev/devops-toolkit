@@ -1,0 +1,41 @@
+on:
+    workflow_dispatch:
+    #push:
+        #branches: ["main"]
+
+jobs:
+    my_job: 
+      runs-on: ubuntu-latest
+      steps:
+        - name: Check out the code
+          uses: actions/checkout@v4
+
+        - name: login to hub
+          run: echo "${{secrets.DOCKERHUB_PASSWORD}}" | docker login -u "${{secrets.DOCKERHUB_USERNAME}}" --password-stdin
+
+        - name: BUILD and PUSH
+          run: |
+            docker build -t ${{secrets.DOCKERHUB_USERNAME}}/my-bot:${{github.sha}} -t ${{secrets.DOCKERHUB_USERNAME}}/my-bot:latest .
+            docker push ${{secrets.DOCKERHUB_USERNAME}}/my-bot:${{github.sha}}
+            docker push ${{secrets.DOCKERHUB_USERNAME}}/my-bot:latest
+
+        - name: Copy compose.yaml to Server
+          uses: appleboy/scp-action@v0.1.7
+          with:
+            host: ${{ secrets.SERVER_IP }}
+            username: ec2-user
+            key: ${{ secrets.SSH_PRIVATE_KEY }}
+            source: "compose.yaml"
+            target: "~/"
+            
+        - name: Deploy to Server via SSH
+          uses: appleboy/ssh-action@v1.0.3
+          with:
+            host: ${{ secrets.SERVER_IP }}
+            username: ec2-user
+            key: ${{ secrets.SSH_PRIVATE_KEY }}
+            script: |
+              export DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}
+              export BOT_TOKEN=${{ secrets.BOT_TOKEN }}
+              docker compose pull
+              docker compose up -d --remove-orphans       

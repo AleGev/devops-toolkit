@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-volume
+spec:
+  containers:
+    - name: web
+      image: nginx
+      
+    # 2. Mount the "disk" into a specific directory inside the container
+      volumeMounts:
+      - name: my-html-disk                  # Must match the volume name defined below
+        mountPath: /usr/share/nginx/html    # Default directory used by Nginx to serve web content
+
+# 1. Define the "disk" at the Pod level
+      volumes:
+      - name: my-html-disk
+        configMap:
+          name: custom-page                   # Name of the ConfigMap created in Step 1

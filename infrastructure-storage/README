@@ -1,0 +1,53 @@
+# AWS ElastiCache Redis Storage Layer Configuration
+
+This repository contains the Terraform configuration to deploy an isolated, single-node Amazon ElastiCache Redis cluster within an existing AWS infrastructure. It is designed as a reusable data layer component that dynamically integrates with your network configuration via remote state tracking.
+
+## ⚙️ Version Requirements
+* Terraform: >= 1.5.7
+* AWS Provider: ~> 6.28
+
+## Architecture & Integration Logic
+
+* **Dynamic Network Discovery:** The module utilizes the `terraform_remote_state` data source to securely fetch operational parameters (`vpc_id`, `private_subnet_ids`, and `private_subnet_cidr_blocks`) directly from a previously deployed network layer stored in an S3 bucket.
+* **Network Isolation:** The Redis cluster is bound to private subnets using an `aws_elasticache_subnet_group`. It cannot be accessed from the public internet.
+* **Strict Firewall Rules:** The accompanying Security Group restricts inbound traffic strictly to the standard Redis port (`6379`) and limits the source down to the internal IP ranges of your private subnets. This guarantees that only applications running inside your private perimeter (such as an EKS cluster or internal EC2 instances) can interact with the database.
+
+---
+
+## Configuration for Reusability
+
+To reuse this module for different projects or environments, verify and update the following backend settings in your files:
+
+### 1. Remote State Source (`main.tf`)
+
+The module expects to read the network configuration from a specific S3 key. If your network layer uses a different naming convention, update the `config` block under `data "terraform_remote_state" "network"`:
+
+* `bucket`: The name of your centralized S3 state bucket.
+* `key`: The path to the network state file (e.g., `network/terraform.tfstate`).
+
+### 2. Output Dependencies
+
+This module relies on the network layer exporting specific output names. Ensure your network module provides:
+
+* `vpc_id`
+* `private_subnet_ids`
+* `private_subnet_cidr_blocks`
+
+### 3. Engine and Instance Sizing (`main.tf`)
+
+The current footprint is configured for minimal resource consumption and development cycles:
+
+* `node_type = "cache.t3.micro"` (Burstable performance tier)
+* `num_cache_nodes = 1` (Standalone instance without replication)
+* `engine_version = "7.0"` with `parameter_group_name = "default.redis7"`
+
+For scaling or staging needs, these parameters can be changed directly in the `aws_elasticache_cluster` resource block before initialization.
+
+---
+
+## Deployment and Automation Workflow
+
+1. **Prerequisite:** Ensure that your network infrastructure layer is fully applied and its remote state is accessible in the designated S3 bucket path.
+2. **Initialize:** Run `terraform init` to configure the provider plugins and connect to the dedicated state storage path (`storage/terraform.tfstate`).
+3. **Plan:** Execute `terraform plan` to verify resource creation and ensure the security group rules correctly map your private subnet CIDR blocks.
+4. **Apply:** Execute `terraform apply`. Once the process completes, the module exposes the `redis_endpoint` output parameter. This connection string is used by application deployment tools (such as Helm charts or application configuration variables) to route backend traffic to the cache layer.

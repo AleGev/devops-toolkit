@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: liveness-test
+spec:
+  containers:
+  - name: my-app
+    image: busybox
+    # # Script: create a file, wait 15 seconds, delete the file (simulate a failure),
+# then sleep indefinitely
+    args:
+    - /bin/sh
+    - -c
+    - touch /tmp/healthy; sleep 15; rm -f /tmp/healthy; sleep 600
+    livenessProbe:
+      exec:
+        command:
+        - cat
+        - /tmp/healthy
+      initialDelaySeconds: 5  # Wait 5 seconds before the first health check
+      periodSeconds: 5        # Run the health check every 5 seconds

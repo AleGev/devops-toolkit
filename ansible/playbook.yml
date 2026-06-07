@@ -1,0 +1,134 @@
+---
+- name: Настройка сервера для запуска Docker
+  hosts: webservers
+  become: true
+
+  tasks:
+  # --- БЛОК 1: ИНФРАСТРУКТУРА ---
+    - name: Установка системных пакетов
+      ansible.builtin.package:
+        name:
+          - docker
+          - git
+        state: present
+
+    - name: Создание системной директории для плагинов Docker
+      ansible.builtin.file:
+        path: /usr/libexec/docker/cli-plugins
+        state: directory
+        mode: '0755' # присваивает файлу математический атрибут исполняемой программы (executable). Это системное требование ядра Linux, без которого запуск файла будет заблокирован.
+
+    - name: Загрузка бинарного файла Docker Compose
+      ansible.builtin.get_url:
+        url: https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64
+        dest: /usr/libexec/docker/cli-plugins/docker-compose
+        mode: '0755'
+        owner: root
+        group: root
+
+    - name: Создание директории для конфигурации службы Docker
+      ansible.builtin.file:
+        path: /etc/systemd/system/docker.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Запись файла параметров запуска Docker
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/docker.service.d/override.conf
+        content: |
+          [Service]
+          ExecStart=
+          ExecStart=/usr/bin/dockerd
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Создание корневой директории конфигурации Docker
+      ansible.builtin.file:
+        path: /etc/docker
+        state: directory
+        mode: '0755'
+#===============================================================
+#  этот json-file заменен на облачный awslogs
+#---------------------------------------------------------------
+    #- name: Установка математических лимитов памяти для логов
+      #ansible.builtin.copy:
+        #dest: /etc/docker/daemon.json
+        #content: |
+          #{
+            #"log-driver": "json-file",
+            #"log-opts": {
+              #"max-size": "10m",
+              #"max-file": "3"
+            #}
+          #}
+        #mode: '0644'
+      #notify: Перезапустить службу Docker
+#================================================================
+
+    - name: Обновление конфигурации и запуск службы Docker
+      ansible.builtin.systemd:
+       name: docker
+       state: started
+       enabled: true
+       daemon_reload: true
+
+    - name: Назначение прав пользователя ec2-user
+      ansible.builtin.user:
+        name: ec2-user
+        groups: docker
+        append: true
+
+    # --- СИСТЕМНЫЙ РАЗРЫВ СВЯЗИ ---
+    - name: Сброс системного соединения для применения новых прав группы
+      ansible.builtin.meta: reset_connection
+
+        # --- БЛОК 2: ПРИЛОЖЕНИЕ ---
+    - name: Создание рабочей директории приложения
+      ansible.builtin.file:
+        path: /home/ec2-user/app
+        state: directory
+        owner: ec2-user
+        group: ec2-user
+        mode: '0755'
+
+    - name: Копирование compose.yaml на сервер
+      ansible.builtin.copy:
+        src: ../compose.yaml
+        dest: /home/ec2-user/app/compose.yaml
+        owner: ec2-user
+        group: ec2-user
+        mode: '0644'
+
+    - name: Генерация файла переменных среды (.env)
+      ansible.builtin.copy:
+        dest: /home/ec2-user/app/.env
+        content: |
+          DOCKERHUB_USERNAME={{ dockerhub_user }}
+          APP_TOKEN={{ app_token }}
+          my_redis={{ redis_url }}
+        owner: ec2-user
+        group: ec2-user
+        mode: '0600'
+
+    - name: Принудительное скачивание последней версии образа
+      ansible.builtin.command: docker compose --env-file .env pull
+      args:
+        chdir: /home/ec2-user/app
+      become_user: ec2-user
+
+    - name: Загрузка образов и запуск контейнеров
+      ansible.builtin.command: docker compose --env-file .env up -d --remove-orphans
+      args:
+        chdir: /home/ec2-user/app
+      become_user: ec2-user
+
+  
+  #handlers:
+    #- name: Перезапустить службу Docker
+      #ansible.builtin.systemd:
+        #name: docker
+        #state: restarted
+        #daemon_reload: true

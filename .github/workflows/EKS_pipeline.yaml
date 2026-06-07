@@ -1,0 +1,104 @@
+on:
+    workflow_dispatch:
+    #push:
+        #branches: ["main"]
+
+jobs:
+    build_docker:
+        runs-on: ubuntu-latest
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: eu-central-1
+
+        steps:
+
+            - name: check aws
+              run: aws sts get-caller-identity 
+
+            - name: download files to Github action
+              run: |
+               git init
+               git remote add origin https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+               
+               git sparse-checkout init --cone
+               git sparse-checkout set infrastructure-storage infrastructure-network infrastructure-app kuber/infrastructure-EKS app Dockerfile kuber/bot-chart kuber/pods/alb-values.yaml
+              
+               git pull --depth=1 origin main
+
+            # Установка инструмента Terraform на сервер GitHub
+            - name: Setup Terraform
+              uses: hashicorp/setup-terraform@v3
+
+            - name: login to hub
+              run: echo "${{secrets.DOCKERHUB_PASSWORD}}" | docker login -u "${{secrets.DOCKERHUB_USERNAME}}" --password-stdin
+
+            - name: BUILD and PUSH
+              run: |
+                docker build -t ${{secrets.DOCKERHUB_USERNAME}}/my_app:${{github.sha}} -t ${{secrets.DOCKERHUB_USERNAME}}/my_app:latest .
+                docker push ${{secrets.DOCKERHUB_USERNAME}}/my_app:${{github.sha}}
+                docker push ${{secrets.DOCKERHUB_USERNAME}}/my_app:latest
+
+            - name: set up ssh key on runner
+              run: |
+                mkdir -p ~/.ssh
+                echo "${{secrets.SSH_PRIVATE_KEY}}" > ~/.ssh/deploy_key
+                chmod 600 ~/.ssh/deploy_key
+
+            - name: launch infrastructure-network
+              working-directory: infrastructure-network
+              run: |
+                terraform init
+                terraform apply -auto-approve
+                # Запись системного вывода Terraform vpcid в локальную переменную раннера
+                EXTRACTED_VPC_ID=$(terraform output -raw vpc_id)
+                echo "VPC_ID=$EXTRACTED_VPC_ID" >> $GITHUB_ENV
+
+            - name: launch infrastructure-storage
+              working-directory: infrastructure-storage
+              run: |
+                terraform init
+                terraform apply -auto-approve
+                # Запись системного вывода Terraform redis_endpoint в локальную переменную раннера
+                EXTRACTED_REDIS_ENDPOINT=$(terraform output -raw redis_endpoint)
+                echo "REDIS_ENDPOINT=$EXTRACTED_REDIS_ENDPOINT" >> $GITHUB_ENV
+
+            - name: launch infrastructure-EKS
+              working-directory: kuber/infrastructure-EKS
+              env:
+                TF_VAR_app_token: ${{ secrets.BOT_TOKEN }} 
+                TF_VAR_redis_host: ${{ env.REDIS_ENDPOINT }} 
+              run: |
+                terraform init
+                terraform apply -auto-approve
+                # Запись системного вывода Terraform irsa_iam_role_arn and irsa_app_iam_role_arn в локальную переменную раннера
+                EXTRACTED_IRSA_ARN=$(terraform output -raw irsa_iam_role_arn)
+                echo "IRSA_ARN=$EXTRACTED_IRSA_ARN" >> $GITHUB_ENV
+                EXTRACTED_APP_IRSA_ARN=$(terraform output -raw irsa_app_iam_role_arn)
+                echo "APP_IRSA_ARN=$EXTRACTED_APP_IRSA_ARN" >> $GITHUB_ENV
+
+            - name: update kubeconfig
+              run: aws eks update-kubeconfig --region eu-central-1 --name my-cluster
+
+            - name: Add Helm repository
+              run: |
+                helm repo add eks https://aws.github.io/eks-charts
+                helm repo update
+
+            - name: installing controller
+              run: |
+                helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+                -n kube-system \
+                -f kuber/pods/alb-values.yaml \
+                --set vpcId=$VPC_ID \
+                --set serviceAccount.annotations."eks\\.amazonaws\\.com/role-arn"=$IRSA_ARN \
+                --version 1.14.0
+
+            - name: installing app-chart
+              run: |
+                helm upgrade --install my-app kuber/app-chart \
+                --set image.repository=${{secrets.DOCKERHUB_USERNAME}}/my_app \
+                --set image.tag=${{github.sha}} \
+                --set serviceAccount.roleArn=$APP_IRSA_ARN
+            
+

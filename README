@@ -1,0 +1,44 @@
+# Multi-Paradigm DevOps Infrastructure & Delivery Toolkit
+
+This repository contains a set of Infrastructure as Code (IaC) modules, configuration management scripts, and CI/CD pipelines. It is designed to deploy a containerized application into AWS using two distinct, parallel deployment paradigms: a traditional virtual machine architecture managed by Ansible, and a cloud-native cluster architecture orchestrated by Amazon EKS and Helm.
+
+## 📂 Macroscopic Repository Structure
+
+* `.github/workflows/`: Contains the primary CI/CD orchestrators (`AS_pipeline.yaml` for EC2 and `EKS_pipeline.yaml` for Kubernetes).
+* `infrastructure-*/`: Independent Terraform modules isolating the Network, Storage, and EC2 Application layers.
+* `kuber/`: Contains the Terraform module specifically for Amazon EKS provisioning, alongside Helm charts and reference Kubernetes manifests.
+* `ansible/`: Configuration management playbooks responsible for OS-level bootstrapping and Docker orchestration on raw EC2 instances.
+* `app/` & `Dockerfile`: The application source code and its multi-stage containerization blueprint.
+
+## ⚙️ Parallel Deployment Strategies
+
+This repository executes automated delivery through GitHub Actions. Depending on the selected workflow, the infrastructure follows one of two deterministic sequences.
+
+### Path A: EC2 Compute & Configuration Management (`AS_pipeline.yaml`)
+
+This pipeline provisions isolated EC2 instances and configures them dynamically.
+
+1. **Containerization:** Builds the multi-stage Docker image, tags it with the Git commit SHA, and pushes it to DockerHub.
+2. **Infrastructure Provisioning:** Initializes and applies Terraform modules sequentially (Network -> Storage -> Application).
+3. **OS Bootstrapping:** Installs the AWS SSM plugin on the GitHub Runner to establish a secure, keyless SSH proxy. Ansible reads the auto-generated `inventory.ini`, installs the Docker daemon, and deploys the application via `compose.yaml` utilizing AWS CloudWatch logging drivers and auto-healing containers.
+
+### Path B: Amazon EKS & Helm Orchestration (`EKS_pipeline.yaml`)
+
+This pipeline provisions a managed Kubernetes control plane and deploys workloads via Helm.
+
+1. **Containerization:** Builds the application image and pushes it to DockerHub.
+2. **Cluster Provisioning:** Applies the Network and Storage layers, followed by the EKS module. It establishes OIDC-based IAM Roles for Service Accounts (IRSA) and extracts their ARNs.
+3. **Workload Orchestration:** Updates the runner's kubeconfig and installs the AWS Load Balancer Controller using dynamic VPC ID parameters. It then executes a Helm upgrade for the application chart (`app-chart`), injecting the specific image tag and IAM role ARNs via `--set` flags to ensure secure parameter store access and automated Ingress routing.
+
+## 🐳 Containerization & Testing Protocol
+
+Both deployment paths utilize the same unified `Dockerfile`. It creates an intermediate `test` stage to execute `pytest` and `pylint`. Upon successful validation, it builds the `production` stage. The `PYTHONUNBUFFERED=1` environment variable (activated in compose.yaml) is enforced to ensure application logs bypass the internal Python buffer and stream directly to the respective logging agents (CloudWatch for EC2, or container stdout for Kubernetes).
+
+## 🔑 Global Operational Requirements
+
+To execute either pipeline, the following Action Secrets must be populated in the GitHub repository:
+
+* `AWS_ACCESS_KEY_ID` & `AWS_SECRET_ACCESS_KEY`: Required for Terraform execution and AWS CLI interactions.
+* `DOCKERHUB_USERNAME` & `DOCKERHUB_PASSWORD`: Required for image registry authentication.
+* `SSH_PRIVATE_KEY`: Required exclusively for Path A to facilitate the initial Ansible SSM session handshakes.
+* `BOT_TOKEN`: The application secret injected securely into AWS Systems Manager (SSM) Parameter Store during the Terraform run.

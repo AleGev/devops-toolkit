@@ -1,0 +1,59 @@
+# AWS Infrastructure State Bootstrapping (S3 + DynamoDB Backend)
+
+This repository contains the bootstrapping configuration required to initialize and manage a secure, remote, and isolated Terraform State Backend in AWS. It creates the core components needed for dynamic state locking and team collaboration across all other infrastructure layers (e.g., network, application, and EKS deployments).
+
+## Architecture Components
+
+* **S3 Bucket (`algev-1990-tfstatelocker`):** Acts as the centralized, secure storage for Terraform `.tfstate` files. It includes `force_destroy = true` 
+
+Important Security Note on force_destroy
+
+The aws_s3_bucket resource currently includes the force_destroy = true argument. This setting dictates how Terraform handles bucket deletion when it contains data:
+When to use (force_destroy = true): This is suitable only for local sandboxes, training, or initial bootstrapping phases where you frequently create, destroy, and recreate the entire testing setup from scratch without leaving orphaned resources behind.
+
+When to remove (force_destroy = false / Default): For staging and production environments, this parameter must be deleted or set to false. This acts as a critical safety guardrail: AWS will block any accidental attempt to delete the bucket via Terraform if it contains active state files, preventing catastrophic data loss.
+
+* **DynamoDB Table (`terraform-state-lock`):** Manages distributed state locking. It utilizes a strict string primary key (`LockID`) and `PAY_PER_REQUEST` billing mode to scale automatically without incurring baseline idle costs.
+
+---
+
+## The "Chicken and Egg" Bootstrapping Process (How to Deploy)
+
+Because Terraform cannot store its state in an AWS S3 bucket before that bucket actually exists, this specific module must be deployed using a two-step initialization process.
+
+## ⚙️ Version Requirements
+* Terraform: >= 1.5.7
+* AWS Provider: ~> 5.0
+
+### Step 1: Local Initialization and Creation
+
+1. Open your terminal and navigate to this directory.
+2. Ensure you have NO `backend` block defined in the code (keep the code exactly as it is written now).
+3. Run `terraform init` to download the local AWS provider.
+4. Run `terraform apply` to physically provision the S3 bucket and DynamoDB table in the `eu-central-1` region. At this stage, the state file (`terraform.tfstate`) is temporarily saved on your local machine.
+
+### Step 2: Migrating to Remote State Backend (Optional but Recommended)
+
+Once the resources are successfully created, you can configure this module to store its own state inside the bucket it just provisioned.
+
+Add the following backend block inside the `terraform {}` configuration block:
+
+```hcl
+backend "s3" {
+  bucket         = "algev-1990-tfstatelocker"
+  key            = "bootstrap/terraform.tfstate"
+  region         = "eu-central-1"
+  dynamodb_table = "terraform-state-lock"
+  encrypt        = true
+}
+
+```
+
+After adding this block, run the migration command:
+
+```bash
+terraform init -migrate-state
+
+```
+
+Terraform will detect the change, automatically copy your local state file into the newly created AWS S3 bucket, and enable DynamoDB distributed locking for this project.

@@ -1,0 +1,54 @@
+# AWS Production VPC Infrastructure Blueprint with Custom NAT Instance & EKS Support
+
+This repository provides a production-ready, secure, and reusable Infrastructure as Code (IaC) blueprint written in Terraform. It deploys a complete Network Architecture (VPC) in AWS featuring isolated public and private subnets across multiple Availability Zones, customized NAT routing, and native integration for Amazon EKS (Elastic Kubernetes Service) or standalone EC2 workloads.
+
+## ⚙️ Version Requirements
+* Terraform: >= 1.5.7
+* AWS Provider: ~> 6.28
+
+## Key Features & Architecture
+
+* Multi-AZ Redundancy: Distributes public and private subnets across zones.
+* Enterprise-Grade Isolation: Private subnets have zero direct exposure to the public internet. All outbound traffic from private resources is safely masked.
+* Cost-Efficient Custom NAT Instance: Replaces expensive AWS NAT Gateways with a custom, optimized Amazon Linux 2 EC2 instance configured with iptables IP masquerading.
+* Native EKS & ALB Ready: Subnets are automatically tagged with required tags (`kubernetes.io/role/elb` and `kubernetes.io/role/internal-elb`) enabling AWS Load Balancer Controller integration.
+* Secure Management via AWS SSM: Built-in IAM instance profile with `AmazonSSMManagedInstanceCore` permissions allows secure terminal access to infrastructure nodes without exposing SSH keys or ports.
+
+---
+
+## Configuration & Customization Parameters
+
+To adapt this network blueprint as a universal solution for your own project, modify the values in the `variables.tf` file.
+
+### 1. Network Topology (CIDR Blocks)
+
+If you need to deploy this network in a different IP range or expand it for more nodes, change the input arrays:
+
+* `public_subnets_cidr`: Defines IP ranges for public-facing resources (e.g., Load Balancers, Bastion hosts). Default: `["10.0.1.0/24", "10.0.3.0/24"]`.
+* `private_subnets_cidr`: Defines IP ranges for protected workloads (e.g., Kubernetes worker nodes, databases). Default: `["10.0.2.0/24", "10.0.4.0/24"]`.
+* `azs`: Sets the target AWS Availability Zones. Ensure the number of elements matches your subnet CIDR lists. Default: `["eu-central-1a", "eu-central-1b"]`.
+
+### 2. Kubernetes Cluster Integration
+
+If you change the name of your target EKS cluster, update the tag key in both `aws_subnet.public_subnet` and `aws_subnet.private_subnet` blocks:
+Replace `"kubernetes.io/cluster/my-cluster" = "shared"` with your actual cluster name. This tells the AWS Load Balancer Controller exactly how to distribute infrastructure workloads: the public subnets (tagged with role/elb) are designated for internet-facing external load balancers, where the private subnets (tagged with role/internal-elb) are reserved for isolated, internal load balancers routing traffic between backend microservices.
+
+---
+
+## Operational Security & Troubleshooting Note
+
+### SSH Port 22 vs. AWS SSM (Systems Manager)
+
+The configuration includes an active IAM Instance Profile that automatically runs the AWS Systems Manager (SSM) Agent on the custom NAT instance.
+
+* Recommended Production State: Because SSM provides secure, audited, passwordless terminal access via the AWS Console or AWS CLI, opening inbound network ports is unnecessary. You can completely delete or comment out the `ingress` rule for port `22` in `aws_security_group.nat_sg`.
+* Debugging & Testing State: The blueprint currently leaves port `22` open to `0.0.0.0/0` specifically for initial testing and network troubleshooting. Ensure this block is removed before deploying to production environments to prevent unauthorized brute-force attempts.
+
+---
+
+## Deployment Steps
+
+1. Configure Remote State: Update the `backend "s3"` block in `providers.tf` with your specific S3 bucket name and DynamoDB state-locking table.
+2. Initialize Terraform: Run `terraform init` to download the AWS provider and configure the secure remote backend.
+3. Review Execution Plan: Run `terraform plan` to verify the resources that will be provisioned in your AWS account.
+4. Apply Infrastructure: Execute `terraform apply` to create the network. The outputs will expose the allocated VPC ID and Subnet IDs to be consumed by your application deployment pipelines (e.g., Helm or EKS blueprints).

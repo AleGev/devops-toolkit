@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-sa
+  namespace: default
+  annotations:
+    eks.amazonaws.com/role-arn: {{ .Values.serviceAccount.roleArn | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: test-app
+  name: test-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-app
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: test-app
+    spec:
+      serviceAccountName: app-sa
+      containers:
+      - image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        name: my-bot
+        env:
+        - name: AWS_REGION
+          value: "eu-central-1"
+        - name: SSM_PARAMETER_NAME
+          value: "/production/bot/token"
+        - name: SSM_REDIS_NAME
+          value: "/production/redis/host"
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "250m" 
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+status: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: test-app
+  name: test-app
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+    targetPort: 80
+  selector:
+    app: test-app
+status: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: test-ingress
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+spec:
+  ingressClassName: alb
+  rules:
+  - http:
+      paths:
+      - backend:
+          service:
+            name: test-app
+            port:
+              number: 80
+        path: /
+        pathType: Exact
+status: {}
