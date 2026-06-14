@@ -2,10 +2,13 @@ Universal LinkedIn Job Analyzer
 This script is an automated pipeline that ingests job postings from LinkedIn, applies initial heuristic filtering, performs semantic vector scoring against a baseline resume, and executes a final logical evaluation using the Google Gemini LLM API.
 It is designed to be fully agnostic. By means of modifying the configuration variables, it functions for any domain (e.g., Software Engineering, Marketing, Data Science, etc).
 
-Prerequisites
-Install the required Python dependencies:
+## Prerequisites
 
-pip install sentence-transformers numpy pandas google-generativeai linkedin-api beautifulsoup4 requests
+Install the required Python dependencies locally, or build the Docker container using the provided `requirements.txt`.
+
+**Local Installation:**
+```bash
+pip install requests==2.32.3 numpy==1.26.4 pandas==2.2.2 beautifulsoup4==4.12.3 linkedin-api==2.3.0 sentence-transformers==3.0.1
 
 System Architecture
 
