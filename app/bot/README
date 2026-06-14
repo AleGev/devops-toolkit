@@ -1,0 +1,167 @@
+# Secure S3 File Gateway - Telegram Bot
+
+## Overview
+
+This Telegram bot acts as an authorization gateway to generate secure, time-limited download links (Pre-signed URLs) for files stored in a designated AWS S3 DMZ (Demilitarized Zone) bucket.
+
+It is designed for strict zero-trust environments. It does not download files to memory, and it does not use static AWS Access Keys. It authenticates natively via Kubernetes IRSA (IAM Roles for Service Accounts).
+
+## Security Architecture
+
+* **No Persistent Credentials:** Authentication relies entirely on temporary AWS STS tokens injected into the Pod by the EKS OIDC provider.
+* **Minimal Scope:** The bot only has read access (`s3:GetObject`) to a single, isolated transit bucket.
+* **Bounded Lifespan:** Links are mathematically capped at 60 minutes to ensure alignment with standard AWS STS session rotation lifecycles.
+
+## Prerequisites
+
+1. An AWS EKS Cluster with an established IAM OIDC provider.
+2. A dedicated AWS S3 bucket for file sharing (e.g., `your-company-shared-bot-bucket`).
+3. A Telegram Bot Token stored in AWS SSM Parameter Store as a `SecureString`.
+
+---
+
+## Infrastructure Configuration (Terraform)
+
+### 1. IAM Policy
+
+The bot requires an IAM policy that grants permission to read the SSM parameter containing the Telegram token and permission to retrieve objects from the shared S3 bucket.
+
+```hcl
+resource "aws_iam_policy" "bot_gateway_policy" {
+  name   = "telegram-s3-gateway-policy"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = [
+          "ssm:GetParameter"
+        ]
+        Resource = "arn:aws:ssm:eu-central-1:123456789012:parameter/production/app/token"
+      },
+      {
+        Effect   = "Allow"
+        Action   = [
+          "kms:Decrypt"
+        ]
+        Resource = "arn:aws:kms:eu-central-1:123456789012:alias/aws/ssm"
+      },
+      {
+        Effect   = "Allow"
+        Action   = [
+          "s3:GetObject"
+        ]
+        Resource = "arn:aws:s3:::your-company-shared-bot-bucket/*"
+      }
+    ]
+  })
+}
+
+```
+
+### 2. IAM Role for Service Account (IRSA)
+
+Attach the policy to an IAM role bound to the Kubernetes Service Account.
+
+```hcl
+module "irsa_s3_bot" {
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts"
+  version = "~> 6.6.0" 
+
+  name = "telegram-s3-gateway-role"
+  role_policy_arns = {
+    policy = aws_iam_policy.bot_gateway_policy.arn
+  }
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["default:s3-bot-sa"]
+    }
+  }
+}
+
+```
+
+---
+
+## Kubernetes Deployment Configuration
+
+The Pod running the bot must specify the correct ServiceAccount and inject the necessary environment variables.
+
+### Environment Variables Required:
+
+| Variable | Description | Example |
+| --- | --- | --- |
+| `AWS_REGION` | The AWS region where resources reside. | `eu-central-1` |
+| `SSM_PARAMETER_NAME` | The SSM path containing the Telegram Bot Token. | `/production/app/token` |
+| `S3_SHARED_BUCKET` | The exact name of the S3 bucket used for file sharing. | `your-company-shared-bot-bucket` |
+
+### Deployment Manifest Example:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s3-gateway-bot
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: s3-gateway-bot
+  template:
+    metadata:
+      labels:
+        app: s3-gateway-bot
+    spec:
+      serviceAccountName: s3-bot-sa # Crucial for IRSA authentication
+      containers:
+      - name: bot
+        image: your-registry/s3-bot:latest
+        env:
+        - name: AWS_REGION
+          value: "eu-central-1"
+        - name: SSM_PARAMETER_NAME
+          value: "/production/app/token"
+        - name: S3_SHARED_BUCKET
+          value: "your-company-shared-bot-bucket"
+
+```
+
+---
+
+## Bot Usage Manual
+
+The bot utilizes a stateless command structure. There are no configuration steps required from the end-user.
+
+### Commands
+
+* `/start` or `/help` - Prints the initialization status, the target bucket name, and usage instructions.
+* `/link <file_path> <minutes>` - Generates the Pre-signed URL.
+
+### Execution Example
+
+**User Input:**
+
+```text
+/link reports/Q3_financial_data.pdf 15
+
+```
+
+**Bot Response:**
+
+```text
+✅ Link Generated Successfully
+
+File: reports/Q3_financial_data.pdf
+Valid for: 15 minutes
+
+https://your-company-shared-bot-bucket.s3.eu-central-1.amazonaws.com/reports/Q3_financial_data.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=ASIA...
+
+```
+
+### Error Handling Restrictions
+
+* **Time Limit:** If a user requests a time exceeding 60 minutes, the bot will reject the input. This is enforced to prevent URLs from outliving the underlying Kubernetes STS session token.
+* **File Not Found:** AWS S3 Pre-signed URL generation is a local cryptographic operation. The bot will generate a URL even if the file does not exist in the bucket. The user will receive a standard XML `404 NoSuchKey` error in their browser upon clicking the link. Ensure the exact path (Key) is correct.
