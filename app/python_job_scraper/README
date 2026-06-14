@@ -1,0 +1,41 @@
+Universal LinkedIn Job Analyzer
+This script is an automated pipeline that ingests job postings from LinkedIn, applies initial heuristic filtering, performs semantic vector scoring against a baseline resume, and executes a final logical evaluation using the Google Gemini LLM API.
+It is designed to be fully agnostic. By means of modifying the configuration variables, it functions for any domain (e.g., Software Engineering, Marketing, Data Science, etc).
+
+Prerequisites
+Install the required Python dependencies:
+
+pip install sentence-transformers numpy pandas google-generativeai linkedin-api beautifulsoup4 requests
+
+System Architecture
+
+The pipeline processes data through four consecutive stages to minimize API utilization costs and execution time:
+Ingestion: Retrieves listings from LinkedIn API utilizing provided session cookies.
+Deterministic Filter: Evaluates titles and descriptions against predefined lists of mandatory keywords and strict exclusion markers. Jobs failing this check are discarded.
+Semantic Scoring: Converts the job description and your baseline resume into mathematical vectors using SentenceTransformers. Computes the cosine similarity. Jobs scoring below 10.0 are discarded.
+LLM Verification: Transmits surviving job descriptions to the Gemini REST API. The LLM evaluates the text against strict logical rules (e.g., maximum years of experience, specific responsibilities) and outputs a final boolean decision.
+
+Universal Configuration Guide
+
+To adapt the script for your specific job search, locate the USER CONFIGURATION block inside the main() function and modify the following variables:
+1. Authentication
+API_KEY: Your Google Gemini API Key.
+COOKIES: Your active LinkedIn session cookies (li_at and JSESSIONID).
+2. Candidate Baseline
+RESUME: A concise summary of your skills and experience. The script utilizes this string to establish the mathematical vector baseline for the similarity scoring stage.
+3. Search Parameters
+QUERIES: A list of search strings to execute on LinkedIn.
+LOCATION: Geographic filter (e.g., "United States", "Remote", "London").
+QUERY_LIMIT: Maximum number of results to fetch per query.
+4. Fast Filters
+EXCLUSION_MARKERS: A python set of lowercase strings. If any of these words exist in the job text, the job is immediately rejected. Use this to filter out seniority or Junior levels or irrelevant domains.
+Example (Data Entry): {"manager", "developer", "engineer", "senior"}
+MANDATORY_KEYWORDS: A python set of lowercase strings. At least one of these words must exist in the job text for it to pass the filter.
+Example (Graphic Design): {"photoshop", "illustrator", "figma", "design"}
+5. LLM Logic
+LLM_RULES: Plain text instructions sent to the LLM to govern the final approval decision. State the requirements as explicit rejection criteria.
+Example: "Reject if the role requires cold calling, B2B sales, or more than 5 years of experience."
+
+Output and Data Persistence
+
+The script utilizes an SQLite database (job_cache.db) to track processed jobs. This prevents redundant API calls on subsequent runs. Upon completion, the script executes print_approved_jobs() which queries the database and outputs a pandas DataFrame containing all job IDs that passed the final LLM verification stage.

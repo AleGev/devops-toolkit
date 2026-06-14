@@ -65,7 +65,7 @@ Attach the policy to an IAM role bound to the Kubernetes Service Account.
 
 ```hcl
 module "irsa_s3_bot" {
-  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts"
+  source = "terraform-aws-modules/iam/aws//modules iam-role-for-service-accounts"
   version = "~> 6.6.0" 
 
   name = "telegram-s3-gateway-role"
