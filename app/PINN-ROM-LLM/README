@@ -1,0 +1,85 @@
+# Integrated Cold Storage Simulator (PINN-ROM + LLM)
+
+## Fundamental Concept & Physics-Informed Machine Learning
+
+Industrial refrigeration design requires calculating heat gains. Standard thermal modeling involves solving large systems of differential equations for every spatial and temporal grid node. This system achieves high calculation speed by utilizing Physics-Informed Neural Networks (PINN) and Reduced Order Modeling (ROM) to calculate thermodynamics in milliseconds. This speed enables the analysis of thousands of operational scenarios and passes the results to a Large Language Model (LLM) for automated expert evaluation.
+
+### How the Computational Core Works
+
+1.  **ROM (Reduced Order Modeling):** The system compresses complex physical data. The model uses six basis functions to describe the thermodynamic system dynamics. This accelerates computations significantly.
+2.  **PINN (Physics-Informed Neural Networks):** The neural network incorporates physical equations (the heat equation) directly into its loss function. The network must comply with the laws of thermodynamics to minimize its error rate.
+3.  **Result:** The system provides the execution speed of a neural network combined with the physical accuracy of a full thermal simulator.
+4.  **LLM Interpretation:** The simulation outputs Key Performance Indicators (KPIs) such as energy consumption, operational cost, and peak thermal loads. The Gemini language model analyzes these metrics and generates practical engineering recommendations based on the numerical outputs.
+
+---
+
+## System Architecture
+
+The software consists of three logical modules integrated into a single computational pipeline.
+
+### 1. Thermal Conduction Physical Model (PINN-ROM)
+This module calculates heat transfer through the cold room walls.
+*   **Mathematical Framework:** The algorithm uses the one-dimensional heat equation with dynamic boundary conditions. External temperature and wind velocity continuously modify the convection coefficient.
+*   **Dimensionality Reduction (ROM):** The heat capacity and thermal conductivity matrix of the wall (e.g., an 81-node spatial grid) is compressed to six basis vectors using Singular Value Decomposition (SVD).
+*   **Neural Network (PINN):** A Multi-Layer Perceptron predicts the coefficients of these six vectors. The network receives a penalty during training for violating energy conservation laws.
+
+### 2. Zone Module (ColdRoomZone)
+This module calculates the internal thermal balance and the required refrigeration equipment workload.
+*   **Product Chilling:** The algorithm processes the arrival of warm meat products. Carcass heat capacity is calculated directly from physical mass. The system calculates the specific power required to cool the product within a designated timeframe.
+*   **Air Exchange:** The algorithm incorporates stochastic (randomized) door openings by personnel. Warm, moist air enters the refrigerated zone during these openings. The system calculates the additional energy required for both cooling (sensible heat) and dehumidification (latent heat).
+*   **KPI Calculation:** The module calculates electrical energy consumption, compressor peak power, financial costs in euros, carbon dioxide emissions, and the total number of hours the internal temperature deviates from the required parameters.
+
+### 3. Automated Analytics (Gemini LLM)
+This module evaluates the computed KPIs for physical validity and transmits them to the Gemini 2.5 Flash model.
+*   **Quality Control (QC):** The algorithm acts as a strict filter. It identifies negative energy values, temperature anomalies, or logistical inconsistencies before transmitting data to the external API.
+*   **Report Generation:** The LLM generates an evaluation based on the prompt instructions. The model ranks operational scenarios by energy efficiency, identifies icing risks caused by high latent heat loads, and provides explicit equipment configuration recommendations.
+
+---
+
+## Operating Instructions
+
+### System Requirements
+Install the required dependencies using the following command:
+```bash
+pip install torch numpy matplotlib gradio requests pyyaml
+
+```
+
+### Web User Interface (UI) Mode
+
+Execute this command to launch the interactive control panel:
+
+```bash
+python integrated_cold_storage.py
+
+```
+
+The software will start a local web server (default address: `http://127.0.0.1:7860`).
+
+1. **Single Scenario Tab:** Modify operational parameters (operating hours, energy tariffs, incoming product volume) and execute the simulation.
+2. **LLM Analysis Tab:** Input your Google AI Studio API key. Click the "Run analysis" button. The system transmits the recent simulation data to the Google server and renders a Markdown engineering report.
+
+### Command Line Interface (CLI) Mode
+
+Execute simulations programmatically by passing arguments directly. This method is required for automated batch processing.
+
+```bash
+python integrated_cold_storage.py --mode zone --hours 8760 --beef_mean_in 3.5 --tariff_eur_per_kWh 0.25 --tag heavy_load
+
+```
+
+### Obtaining and Using the Gemini API Key
+
+1. Navigate to Google AI Studio (`aistudio.google.com`).
+2. Create a new project and generate an API key.
+3. Copy the key. For Web UI usage, paste it into the "Google AI Studio API Key" input field.
+4. For CLI usage, set the key as a system environment variable. The variable retains the legacy name `OPENAI_API_KEY` to maintain backward compatibility with existing command arguments.
+* **Windows:** `set OPENAI_API_KEY=your_gemini_key`
+* **Linux/macOS:** `export OPENAI_API_KEY=your_gemini_key`
+
+
+5. Execute the LLM report generation command:
+
+```bash
+python integrated_cold_storage.py --input_dir out --use_llm --model gemini-2.5-flash
+
