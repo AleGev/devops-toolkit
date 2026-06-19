@@ -1,4 +1,4 @@
-FROM python:3.11 AS base
+FROM python:3.11-slim AS base
 WORKDIR /app/bot
 COPY app/bot/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -9,6 +9,7 @@ RUN pip install pytest pylint
 RUN pylint *.py && pytest
 
 FROM base AS production
-COPY app/bot .
-#ENV PYTHONUNBUFFERED=1 # <--- Prevent Python from buffering logs in memory. activated in compose.yaml
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin appuser
+COPY --chown=appuser:appuser app/bot .
+USER appuser
 CMD ["python", "bot.py"]
